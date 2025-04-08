@@ -9,7 +9,79 @@ function sortArrayByKey(array, sortKey) {
   });
 }
 
-// Process object based on sort configuration
+function handleWildcardInPath(obj, rest, sortKey) {
+  if (typeof obj === 'object' && !Array.isArray(obj)) {
+    const newObj = { ...obj };
+    Object.keys(obj).forEach((key) => {
+      newObj[key] = traverseAndSort(obj[key], rest, sortKey);
+    });
+    return newObj;
+  } else if (Array.isArray(obj)) {
+    return obj.map((item) => traverseAndSort(item, rest, sortKey));
+  }
+  return obj;
+}
+
+function handleArrayNotation(obj, current, rest, sortKey) {
+  const arrayKey = current.slice(0, -2);
+  if (obj[arrayKey] && Array.isArray(obj[arrayKey])) {
+    const newObj = { ...obj };
+    newObj[arrayKey] = obj[arrayKey].map((item) => traverseAndSort(item, rest, sortKey));
+    return newObj;
+  }
+  return obj;
+}
+
+function handleLastPathPart(obj, key, sortKey) {
+  if (key === '*') {
+    if (typeof obj === 'object' && !Array.isArray(obj)) {
+      const newObj = { ...obj };
+      Object.keys(obj).forEach((propKey) => {
+        if (Array.isArray(obj[propKey])) {
+          newObj[propKey] = sortArrayByKey(obj[propKey], sortKey);
+        }
+      });
+      return newObj;
+    }
+    return obj;
+  } else if (obj[key] && Array.isArray(obj[key])) {
+    const newObj = { ...obj };
+    newObj[key] = sortArrayByKey(obj[key], sortKey);
+    return newObj;
+  }
+  return obj;
+}
+
+function traverseAndSort(obj, parts, sortKey) {
+  if (!obj || typeof obj !== 'object') return obj;
+
+  if (parts.length === 1) {
+    return handleLastPathPart(obj, parts[0], sortKey);
+  }
+
+  const [current, ...rest] = parts;
+
+  if (current === '*') {
+    return handleWildcardInPath(obj, rest, sortKey);
+  }
+
+  if (current.endsWith('[]')) {
+    return handleArrayNotation(obj, current, rest, sortKey);
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map((item) => traverseAndSort(item, parts, sortKey));
+  }
+
+  if (obj[current]) {
+    const newObj = { ...obj };
+    newObj[current] = traverseAndSort(obj[current], rest, sortKey);
+    return newObj;
+  }
+
+  return obj;
+}
+
 function processObjectWithConfig(data, sortConfig) {
   if (!data || typeof data !== 'object') return data;
 
@@ -19,79 +91,12 @@ function processObjectWithConfig(data, sortConfig) {
 
   let result = { ...data };
 
-  // Process each array configuration
   sortConfig.arrays.forEach((arrayConfig) => {
     const { path, sortKey } = arrayConfig;
     const pathParts = path.split('.');
-
-    function traverseAndSort(obj, parts) {
-      if (!obj || typeof obj !== 'object') return obj;
-
-      if (parts.length === 1) {
-        const key = parts[0];
-        if (key === '*') {
-          // Handle wildcard - apply to all properties
-          if (typeof obj === 'object' && !Array.isArray(obj)) {
-            const newObj = { ...obj };
-            Object.keys(obj).forEach((propKey) => {
-              if (Array.isArray(obj[propKey])) {
-                newObj[propKey] = sortArrayByKey(obj[propKey], sortKey);
-              }
-            });
-            return newObj;
-          }
-          return obj;
-        } else if (obj[key] && Array.isArray(obj[key])) {
-          const newObj = { ...obj };
-          newObj[key] = sortArrayByKey(obj[key], sortKey);
-          return newObj;
-        }
-        return obj;
-      }
-
-      const [current, ...rest] = parts;
-
-      // Handle wildcard in the middle of a path
-      if (current === '*') {
-        if (typeof obj === 'object' && !Array.isArray(obj)) {
-          const newObj = { ...obj };
-          Object.keys(obj).forEach((key) => {
-            newObj[key] = traverseAndSort(obj[key], rest);
-          });
-          return newObj;
-        } else if (Array.isArray(obj)) {
-          return obj.map((item) => traverseAndSort(item, rest));
-        }
-        return obj;
-      }
-
-      // Handle array notation (e.g., "tokens[]")
-      if (current.endsWith('[]')) {
-        const arrayKey = current.slice(0, -2);
-        if (obj[arrayKey] && Array.isArray(obj[arrayKey])) {
-          const newObj = { ...obj };
-          newObj[arrayKey] = obj[arrayKey].map((item) => traverseAndSort(item, rest));
-          return newObj;
-        }
-      }
-
-      if (Array.isArray(obj)) {
-        return obj.map((item) => traverseAndSort(item, parts));
-      }
-
-      if (obj[current]) {
-        const newObj = { ...obj };
-        newObj[current] = traverseAndSort(obj[current], rest);
-        return newObj;
-      }
-
-      return obj;
-    }
-
-    result = traverseAndSort(result, pathParts);
+    result = traverseAndSort(result, pathParts, sortKey);
   });
 
-  // Recursively process all nested objects and arrays
   Object.keys(result).forEach((key) => {
     if (typeof result[key] === 'object') {
       result[key] = processObjectWithConfig(result[key], sortConfig);
@@ -99,6 +104,52 @@ function processObjectWithConfig(data, sortConfig) {
   });
 
   return result;
+}
+
+function preserveComments(yamlText, sortedText, comments, sourceCode) {
+  const originalLines = yamlText.split('\n');
+  const sortedLines = sortedText.split('\n');
+
+  const commentMap = new Map();
+
+  comments.forEach((comment) => {
+    const commentLine = comment.loc.start.line - 1;
+    const commentText = sourceCode.getText(comment);
+
+    let contentLineIndex = commentLine;
+    while (contentLineIndex < originalLines.length) {
+      const line = originalLines[contentLineIndex];
+      if (line && !line.trim().startsWith('#')) {
+        if (!commentMap.has(line)) {
+          commentMap.set(line, []);
+        }
+        commentMap.get(line).push({
+          text: commentText,
+          originalIndex: commentLine,
+        });
+        break;
+      }
+      contentLineIndex++;
+    }
+  });
+
+  const finalLines = [];
+
+  for (const line of sortedLines) {
+    if (commentMap.has(line)) {
+      const lineComments = commentMap.get(line);
+
+      lineComments.sort((a, b) => a.originalIndex - b.originalIndex);
+
+      lineComments.forEach(({ text }) => {
+        finalLines.push(text);
+      });
+    }
+
+    finalLines.push(line);
+  }
+
+  return finalLines.join('\n');
 }
 
 export default {
@@ -140,7 +191,6 @@ export default {
 
     return {
       Program(node) {
-        // Only process YAML files
         if (!context.filename.endsWith('.yaml') && !context.filename.endsWith('.yml')) {
           return;
         }
@@ -151,10 +201,8 @@ export default {
 
           if (!yamlData) return;
 
-          // Sort the data according to configuration
           const sortedData = processObjectWithConfig(yamlData, sortConfig);
 
-          // Check if the data has changed
           const sortedYaml = YAML.stringify(sortedData);
           const originalYaml = YAML.stringify(yamlData);
 
@@ -163,63 +211,20 @@ export default {
               node,
               message: 'YAML arrays should be sorted by specified keys',
               fix(fixer) {
-                // Get all comments with their exact positions and text
                 const comments = sourceCode.getAllComments();
 
-                // Parse the YAML while preserving comments
                 const parsedDoc = YAML.parseDocument(yamlText, { keepSourceTokens: true });
 
-                // Sort the data while keeping track of the original structure
                 const sortedData = processObjectWithConfig(parsedDoc.toJSON(), sortConfig);
 
-                // Create new document with sorted data
                 const newDoc = new YAML.Document();
                 newDoc.contents = sortedData;
 
-                // Create a new document that includes comments
-                let sortedText = newDoc.toString();
-                const originalLines = yamlText.split('\n');
-                const sortedLines = sortedText.split('\n');
+                const sortedText = newDoc.toString();
 
-                // Map to store comment positions relative to their content
-                const commentPositions = new Map();
+                const finalText = preserveComments(yamlText, sortedText, comments, sourceCode);
 
-                comments.forEach((comment) => {
-                  const commentLine = comment.loc.start.line;
-                  const commentText = sourceCode.getText(comment);
-
-                  // Find the next non-comment content line in original file
-                  let nextContentLine = commentLine;
-                  while (nextContentLine < originalLines.length) {
-                    const line = originalLines[nextContentLine].trim();
-                    if (line && !line.startsWith('#')) {
-                      break;
-                    }
-                    nextContentLine++;
-                  }
-
-                  // Store the comment with its associated content
-                  const contentLine = originalLines[nextContentLine]?.trim() || '';
-                  if (!commentPositions.has(contentLine)) {
-                    commentPositions.set(contentLine, []);
-                  }
-                  commentPositions.get(contentLine).push(commentText);
-                });
-
-                // Reconstruct the file with comments in their original relative positions
-                const finalLines = [];
-                for (const line of sortedLines) {
-                  const trimmedLine = line.trim();
-                  if (commentPositions.has(trimmedLine)) {
-                    // Add associated comments before their content
-                    commentPositions.get(trimmedLine).forEach((comment) => {
-                      finalLines.push(comment);
-                    });
-                  }
-                  finalLines.push(line);
-                }
-
-                return fixer.replaceText(node, finalLines.join('\n'));
+                return fixer.replaceText(node, finalText);
               },
             });
           }
